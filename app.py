@@ -49,7 +49,14 @@ def options(args):
     if period not in {'full','previous','current'}: raise ValueError('Choose a valid comparison period.')
     if period!='full' and not dates[period+'_start']:
         raise ValueError('Choose dates for that era first.')
-    return dict(team=team,mode=mode,game_type=game_type,cuts=cuts,dates=dates,period=period)
+    eras={}
+    for key in ['previous','current']:
+        name=args.get(key+'_name','').strip()
+        comments=args.get(key+'_comments','').strip()
+        if len(name)>100 or len(comments)>1000:
+            raise ValueError('Era names are limited to 100 characters and comments to 1,000.')
+        eras[key]={'name':name,'comments':comments}
+    return dict(team=team,mode=mode,game_type=game_type,cuts=cuts,dates=dates,period=period,eras=eras)
 
 
 def analyze(args):
@@ -91,11 +98,76 @@ def index():
 def download():
     try: context=analyze(request.args)
     except (ValueError,OSError): abort(400)
-    buffer=io.StringIO()
-    fields=['game_id','season','week','date','game_type','opponent','venue','score','opponent_score','moneyline','opponent_moneyline','market_status','market_probability','result','profit']
+    rows=[]
+    for game in context['games']:
+        era='full'
+        for key in ['previous','current']:
+            start,end=context['opts']['dates'][key+'_start'],context['opts']['dates'][key+'_end']
+            if start and game['date']>=start and (not end or game['date']<=end): era=key
+        row=export_metadata(context,context['opts']['period'])
+        row.update(game)
+        row.update(game_era=era,game_era_name=era_details(context['opts'],era)['era_name'],
+                   game_era_comments=era_details(context['opts'],era)['era_comments'])
+        rows.append(row)
+    fields=list(export_metadata(context,context['opts']['period']))+['game_id','season','week','date','game_type','opponent','venue','score','opponent_score','moneyline','opponent_moneyline','market_status','market_probability','result','profit','game_era','game_era_name','game_era_comments']
+    return csv_response(rows,fields,f'{context["opts"]["team"]}_games.csv')
+
+
+def era_details(opts,period):
+    if period=='full':
+        return dict(era_name='2010–present',era_comments='',period_start='2010-01-01',period_end='')
+    return dict(era_name=opts['eras'][period]['name'] or period.title()+' era',
+                era_comments=opts['eras'][period]['comments'],period_start=opts['dates'][period+'_start'],period_end=opts['dates'][period+'_end'])
+
+
+def export_metadata(context,period):
+    opts=context['opts']
+    row=dict(team=opts['team'],franchise=TEAMS[opts['team']],period=period,
+             bet_filter=opts['mode'],schedule_filter=opts['game_type'],flat_stake=10,
+             exported_at_utc=datetime.now(ZoneInfo('UTC')).isoformat(),
+             source='nflverse',source_url=context['meta'].get('source',SOURCE),
+             snapshot_retrieved_at=context['meta'].get('retrieved_at','Unknown'),
+             snapshot_sha256=context['meta'].get('sha256','Unknown'),sportsbook='Unknown',price_timing='Unknown',
+             tie_settlement='Void; excluded from settled stake and expected wins',
+             price_boundaries='; '.join(f'{cut:g}' for cut in opts['cuts']))
+    row.update(era_details(opts,period))
+    return row
+
+
+def csv_response(rows,fields,filename):
+    def safe_cell(value):
+        # Keep user-entered names/comments as text when opened in spreadsheets.
+        if isinstance(value,str) and value.lstrip().startswith(('=','+','-','@')):
+            return "'"+value
+        return value
+    buffer=io.StringIO(newline='')
     writer=csv.DictWriter(buffer,fieldnames=fields)
-    writer.writeheader();writer.writerows(context['games'])
-    return Response(buffer.getvalue(),mimetype='text/csv',headers={'Content-Disposition':f'attachment; filename={context["opts"]["team"]}_moneyline_study.csv'})
+    writer.writeheader()
+    writer.writerows({key:safe_cell(value) for key,value in row.items()} for row in rows)
+    return Response(buffer.getvalue(),content_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition':f'attachment; filename={filename}'})
+
+
+@app.get('/report.csv')
+def report():
+    try: context=analyze(request.args)
+    except (ValueError,OSError): abort(400)
+    rows=[]
+    def add(period,section,label,stats,bet_filter=None):
+        row=export_metadata(context,period)
+        row.update(section=section,group=str(label),era_defined=stats is not None)
+        if bet_filter: row['bet_filter']=bet_filter
+        row.update(stats or {key:None for key in context['summary']})
+        ratio=row.pop('roi')
+        row['roi_percent']=100*ratio if ratio is not None else None
+        row['wins_above_market']=None if stats is None else stats['observed_wins']-stats['expected_wins']
+        rows.append(row)
+    for period,stats in context['comparisons']: add(period,'comparison',period,stats)
+    for (label,stats),mode in zip(context['splits'],['all','favorites','underdogs']):
+        add(context['opts']['period'],'bet_selection',label,stats,mode)
+    for label,stats in context['bands']: add(context['opts']['period'],'moneyline_range',label,stats)
+    for label,stats in context['seasons']: add(context['opts']['period'],'season',label,stats)
+    return csv_response(rows,list(rows[0]),f'{context["opts"]["team"]}_analysis_summary.csv')
 
 
 @app.post('/refresh')

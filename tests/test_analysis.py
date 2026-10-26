@@ -79,6 +79,48 @@ class GuiTests(unittest.TestCase):
     def test_refresh_requires_csrf(self):
         self.assertEqual(self.client.post('/refresh').status_code,403)
 
+    def test_named_eras_and_comments_in_summary_export(self):
+        query=dict(team='DET',current_name='Dan Campbell era',
+                   current_comments='New coach, new approach\nReview the rebuild.',
+                   current_start='2021-01-01',period='current')
+        response=self.client.get('/report.csv',query_string=query)
+        self.assertEqual(response.status_code,200)
+        rows=list(csv.DictReader(io.StringIO(response.data.decode())))
+        current=next(r for r in rows if r['section']=='comparison' and r['period']=='current')
+        self.assertEqual(current['era_name'],query['current_name'])
+        self.assertEqual(current['era_comments'],query['current_comments'])
+        self.assertEqual(current['period_start'],'2021-01-01')
+        self.assertEqual(current['flat_stake'],'10')
+        self.assertEqual(current['sportsbook'],'Unknown')
+        self.assertAlmostEqual(float(current['roi_percent']),100*float(current['profit'])/float(current['stake']))
+        self.assertEqual(len([r for r in rows if r['section']=='moneyline_range']),6)
+        self.assertTrue(any(r['section']=='season' for r in rows))
+
+    def test_game_export_labels_era_without_changing_calculations(self):
+        query=dict(team='PIT',current_name='Post-Roethlisberger',
+                   current_comments='Quarterback retired',current_start='2022-01-01')
+        rows=list(csv.DictReader(io.StringIO(self.client.get('/download.csv',query_string=query).data.decode())))
+        old=next(r for r in rows if r['date']<'2022-01-01')
+        new=next(r for r in rows if r['date']>='2022-01-01')
+        self.assertEqual(old['game_era'],'full')
+        self.assertEqual(new['game_era_name'],query['current_name'])
+        self.assertEqual(new['game_era_comments'],query['current_comments'])
+        baseline=gui.analyze({'team':'PIT'})['summary']
+        self.assertEqual(gui.analyze(query)['summary'],baseline)
+
+    def test_era_text_is_escaped_in_html_and_spreadsheet_formulas(self):
+        query=dict(current_start='2022-01-01',current_name='=1+1',
+                   current_comments='<script>alert(1)</script>',period='current')
+        page=self.client.get('/',query_string=query)
+        self.assertNotIn(b'<script>alert(1)</script>',page.data)
+        rows=list(csv.DictReader(io.StringIO(self.client.get('/report.csv',query_string=query).data.decode())))
+        current=next(r for r in rows if r['period']=='current')
+        self.assertEqual(current['era_name'],"'=1+1")
+
+    def test_era_name_and_comment_limits(self):
+        self.assertEqual(self.client.get('/report.csv',query_string={'current_name':'x'*101}).status_code,400)
+        self.assertEqual(self.client.get('/download.csv',query_string={'current_comments':'x'*1001}).status_code,400)
+
     def test_failed_refresh_preserves_data(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)
