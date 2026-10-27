@@ -2,9 +2,13 @@
 
 ## Team analysis GUI
 
-A working Flask GUI now provides team selection and historical $10 flat-bet analysis without requiring MySQL. See [GUI_SETUP.md](GUI_SETUP.md) for use and separate PythonAnywhere deployment. No prediction model code or production database is used.
+The Flask GUI provides team selection and historical $10 flat-bet moneyline and point-spread analysis without requiring MySQL. Era controls and comparisons have been removed. See [GUI_SETUP.md](GUI_SETUP.md) for use and separate PythonAnywhere deployment. No prediction model code or production database is used.
 
 Independent MySQL storage for historical NFL moneyline analysis. This project does not import or change the NFL prediction model. Phase 1 here creates schema only: no teams, historical games, odds, or eras are seeded.
+
+## Legacy database tools
+
+The sections below document separate, unused database utilities. The GUI does not run migrations or use the legacy `team_eras` table. Removing eras from the GUI performs no database deletions.
 
 ## Configuration
 

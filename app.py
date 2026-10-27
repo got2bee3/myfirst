@@ -32,31 +32,10 @@ def options(args):
     cuts=[float(args.get(f'cut{i}',v)) for i,v in enumerate(DEFAULT_CUTS)]
     if any(not -100000<=v<=100000 for v in cuts) or any(a>=b for a,b in zip(cuts,cuts[1:])):
         raise ValueError('Enter five increasing, finite odds boundaries.')
-    dates={key:args.get(key,'').strip() for key in ['previous_start','previous_end','current_start','current_end']}
-    for v in dates.values():
-        if v:
-            datetime.strptime(v,'%Y-%m-%d')
-            if v<'2010-01-01': raise ValueError('Era dates must be on or after January 1, 2010.')
-    for prefix in ['previous','current']:
-        a,b=dates[prefix+'_start'],dates[prefix+'_end']
-        if b and not a: raise ValueError('An era end date also requires a start date.')
-        if a and b and a>b: raise ValueError('Era start must precede its end date.')
-    if dates['previous_start'] and not dates['previous_end']:
-        raise ValueError('Choose an end date for the previous era.')
-    if dates['previous_start'] and dates['current_start'] and dates['previous_end']>=dates['current_start']:
-        raise ValueError('Previous and current eras must not overlap.')
-    period=args.get('period','full')
-    if period not in {'full','previous','current'}: raise ValueError('Choose a valid comparison period.')
-    if period!='full' and not dates[period+'_start']:
-        raise ValueError('Choose dates for that era first.')
-    eras={}
-    for key in ['previous','current']:
-        name=args.get(key+'_name','').strip()
-        comments=args.get(key+'_comments','').strip()
-        if len(name)>100 or len(comments)>1000:
-            raise ValueError('Era names are limited to 100 characters and comments to 1,000.')
-        eras[key]={'name':name,'comments':comments}
-    return dict(team=team,mode=mode,game_type=game_type,cuts=cuts,dates=dates,period=period,eras=eras)
+    market=args.get('market','moneyline')
+    if market not in {'moneyline','spread'}: raise ValueError('Choose moneyline or spread.')
+    return dict(team=team,mode=mode,game_type=game_type,cuts=cuts,market=market)
+
 
 
 def analyze(args):
@@ -64,17 +43,14 @@ def analyze(args):
     games=team_games(read_games(DATA/'games.csv'),opts['team'],datetime.now(ZoneInfo('America/New_York')).date().isoformat())
     if opts['game_type']!='all':
         games=[g for g in games if (g['game_type']=='REG')==(opts['game_type']=='regular')]
-    periods={'full':games}
-    for key in ['previous','current']:
-        start,end=opts['dates'][key+'_start'],opts['dates'][key+'_end']
-        periods[key]=None if not start else [g for g in games if g['date']>=start and (not end or g['date']<=end)]
-    selected=split_filter(periods[opts['period']],opts['mode'])
-    comparisons=[(key,None if group is None else summarize(split_filter(group,opts['mode']))) for key,group in periods.items()]
-    splits=[(label,summarize(split_filter(periods[opts['period']],mode))) for label,mode in [('All games','all'),('Favorites','favorites'),('Underdogs','underdogs')]]
-    seasons=[(season,summarize([g for g in selected if g['season']==season])) for season in sorted({g['season'] for g in selected},reverse=True)]
+    market=opts['market']
+    selected=split_filter(games,opts['mode'],market)
+    splits=[(label,summarize(split_filter(games,mode,market),market)) for label,mode in [('All games','all'),('Favorites','favorites'),('Underdogs','underdogs')]]
+    seasons=[(season,summarize([g for g in selected if g['season']==season],market)) for season in sorted({g['season'] for g in selected},reverse=True)]
+    overview=[(kind,summarize(split_filter(games,opts['mode'],kind),kind)) for kind in ['moneyline','spread']]
     try: meta=json.loads((DATA/'snapshot.json').read_text())
     except (OSError,ValueError): meta={}
-    return dict(opts=opts,games=list(reversed(selected)),summary=summarize(selected),comparisons=comparisons,splits=splits,seasons=seasons,bands=price_bands(selected,opts['cuts']),meta=meta)
+    return dict(opts=opts,games=list(reversed(selected)),summary=summarize(selected,market),overview=overview,splits=splits,seasons=seasons,bands=price_bands(selected,opts['cuts']) if market=='moneyline' else [],meta=meta)
 
 
 @app.template_filter('money')
@@ -85,12 +61,16 @@ def percent(v): return '—' if v is None else f'{v:.1%}'
 def ml(v): return '—' if v is None else f'{v:+.0f}'
 
 
+@app.template_filter('spread')
+def spread(v): return '—' if v is None else 'PK' if v==0 else f'{v:+g}'
+
+
 @app.get('/')
 def index():
     session.setdefault('csrf',secrets.token_hex(24))
     try: context=analyze(request.args)
     except (ValueError, OSError):
-        return render_template('error.html',message='Please check the filters and era dates. If the data file is missing, use Refresh historical data.',csrf=session['csrf']),400
+        return render_template('error.html',message='Please check the team and betting filters. If the data file is missing, use Refresh historical data.',csrf=session['csrf']),400
     return render_template('index.html',teams=TEAMS,csrf=session['csrf'],**context)
 
 
@@ -98,45 +78,28 @@ def index():
 def download():
     try: context=analyze(request.args)
     except (ValueError,OSError): abort(400)
-    rows=[]
-    for game in context['games']:
-        era='full'
-        for key in ['previous','current']:
-            start,end=context['opts']['dates'][key+'_start'],context['opts']['dates'][key+'_end']
-            if start and game['date']>=start and (not end or game['date']<=end): era=key
-        row=export_metadata(context,context['opts']['period'])
-        row.update(game)
-        row.update(game_era=era,game_era_name=era_details(context['opts'],era)['era_name'],
-                   game_era_comments=era_details(context['opts'],era)['era_comments'])
-        rows.append(row)
-    fields=list(export_metadata(context,context['opts']['period']))+['game_id','season','week','date','game_type','opponent','venue','score','opponent_score','moneyline','opponent_moneyline','market_status','market_probability','result','profit','game_era','game_era_name','game_era_comments']
+    metadata=export_metadata(context)
+    rows=[dict(metadata,**game) for game in context['games']]
+    fields=list(metadata)+['game_id','season','week','date','game_type','opponent','venue','score','opponent_score','moneyline','opponent_moneyline','market_status','market_probability','result','profit','team_spread','opponent_spread','spread_odds','opponent_spread_odds','spread_status','spread_result','spread_profit','spread_market_probability']
     return csv_response(rows,fields,f'{context["opts"]["team"]}_games.csv')
 
 
-def era_details(opts,period):
-    if period=='full':
-        return dict(era_name='2010–present',era_comments='',period_start='2010-01-01',period_end='')
-    return dict(era_name=opts['eras'][period]['name'] or period.title()+' era',
-                era_comments=opts['eras'][period]['comments'],period_start=opts['dates'][period+'_start'],period_end=opts['dates'][period+'_end'])
-
-
-def export_metadata(context,period):
+def export_metadata(context,market=None):
     opts=context['opts']
-    row=dict(team=opts['team'],franchise=TEAMS[opts['team']],period=period,
+    return dict(team=opts['team'],franchise=TEAMS[opts['team']],analysis_market=market or opts['market'],
              bet_filter=opts['mode'],schedule_filter=opts['game_type'],flat_stake=10,
              exported_at_utc=datetime.now(ZoneInfo('UTC')).isoformat(),
              source='nflverse',source_url=context['meta'].get('source',SOURCE),
              snapshot_retrieved_at=context['meta'].get('retrieved_at','Unknown'),
              snapshot_sha256=context['meta'].get('sha256','Unknown'),sportsbook='Unknown',price_timing='Unknown',
-             tie_settlement='Void; excluded from settled stake and expected wins',
+             tie_settlement='Moneyline ties and spread pushes are void, excluded from settled stake and expectations',
+             period_start='2010 season',
              price_boundaries='; '.join(f'{cut:g}' for cut in opts['cuts']))
-    row.update(era_details(opts,period))
-    return row
 
 
 def csv_response(rows,fields,filename):
     def safe_cell(value):
-        # Keep user-entered names/comments as text when opened in spreadsheets.
+        # Keep textual cells from being interpreted as spreadsheet formulas.
         if isinstance(value,str) and value.lstrip().startswith(('=','+','-','@')):
             return "'"+value
         return value
@@ -153,20 +116,21 @@ def report():
     try: context=analyze(request.args)
     except (ValueError,OSError): abort(400)
     rows=[]
-    def add(period,section,label,stats,bet_filter=None):
-        row=export_metadata(context,period)
-        row.update(section=section,group=str(label),era_defined=stats is not None)
+    def add(market,section,label,stats,bet_filter=None):
+        row=export_metadata(context,market)
+        row.update(section=section,group=str(label))
         if bet_filter: row['bet_filter']=bet_filter
-        row.update(stats or {key:None for key in context['summary']})
-        ratio=row.pop('roi')
-        row['roi_percent']=100*ratio if ratio is not None else None
-        row['wins_above_market']=None if stats is None else stats['observed_wins']-stats['expected_wins']
+        row.update(stats)
+        row['roi_percent']=100*row.pop('roi') if stats['roi'] is not None else None
+        row.pop('roi',None)
+        row['outcomes_above_market']=stats['observed_wins']-stats['expected_wins']
         rows.append(row)
-    for period,stats in context['comparisons']: add(period,'comparison',period,stats)
+    market=context['opts']['market']
+    for kind,stats in context['overview']: add(kind,'market_overview',kind,stats)
     for (label,stats),mode in zip(context['splits'],['all','favorites','underdogs']):
-        add(context['opts']['period'],'bet_selection',label,stats,mode)
-    for label,stats in context['bands']: add(context['opts']['period'],'moneyline_range',label,stats)
-    for label,stats in context['seasons']: add(context['opts']['period'],'season',label,stats)
+        add(market,'bet_selection',label,stats,mode)
+    for label,stats in context['bands']: add('moneyline','moneyline_range',label,stats)
+    for label,stats in context['seasons']: add(market,'season',label,stats)
     return csv_response(rows,list(rows[0]),f'{context["opts"]["team"]}_analysis_summary.csv')
 
 

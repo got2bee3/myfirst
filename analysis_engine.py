@@ -81,30 +81,46 @@ def team_games(rows, team, today):
         status = 'Unknown' if p is None else 'Favorite' if p > .5 else 'Underdog' if p < .5 else 'Even'
         outcome = 'Pending' if not complete else 'W' if score>oppscore else 'L' if score<oppscore else 'T'
         profit = None if outcome == 'Pending' or ml is None else 0 if outcome == 'T' else -10 if outcome == 'L' else 10*(100/-ml if ml<0 else ml/100)
+        source_spread = number(r.get('spread_line'))
+        spread = None if source_spread is None else -source_spread if is_home else source_spread
+        spread_odds = price(r.get(f'{side}_spread_odds'))
+        opponent_spread_odds = price(r.get(f'{other}_spread_odds'))
+        adjusted_margin = None if not complete or spread is None else score-oppscore+spread
+        spread_result = 'Pending' if not complete else 'Unknown' if adjusted_margin is None else 'Cover' if adjusted_margin>0 else 'No cover' if adjusted_margin<0 else 'Push'
+        spread_profit = None if spread_result in {'Pending','Unknown'} or spread_odds is None else 0 if spread_result=='Push' else -10 if spread_result=='No cover' else 10*(100/-spread_odds if spread_odds<0 else spread_odds/100)
+        spread_probability = implied(spread_odds)/(implied(spread_odds)+implied(opponent_spread_odds)) if spread_odds is not None and opponent_spread_odds is not None else None
+        spread_status = 'Unknown' if spread is None else 'Favorite' if spread<0 else 'Underdog' if spread>0 else 'Even'
         result.append(dict(game_id=r['game_id'],season=int(r['season']),week=int(r['week']),date=r['gameday'],game_type=r['game_type'],
             opponent=r[f'{other}_team'],venue='Home' if is_home else 'Away',score=score,opponent_score=oppscore,
-            moneyline=ml,opponent_moneyline=oppml,market_probability=p,market_status=status,result=outcome,profit=profit))
+            moneyline=ml,opponent_moneyline=oppml,market_probability=p,market_status=status,result=outcome,profit=profit,
+            team_spread=spread,opponent_spread=None if spread is None else -spread,spread_odds=spread_odds,
+            opponent_spread_odds=opponent_spread_odds,spread_status=spread_status,spread_result=spread_result,
+            spread_profit=spread_profit,spread_market_probability=spread_probability))
     return sorted(result,key=lambda r:(r['date'],r['game_id']))
 
 
-def summarize(games):
+def summarize(games, market='moneyline'):
     completed = [g for g in games if g['result']!='Pending']
-    priced = [g for g in completed if g['moneyline'] is not None]
-    settled = [g for g in priced if g['result']!='T']
-    paired = [g for g in settled if g['market_probability'] is not None]
-    profit = sum(g['profit'] for g in priced)
+    odds_key,outcome_key,profit_key,probability_key = ('spread_odds','spread_result','spread_profit','spread_market_probability') if market=='spread' else ('moneyline','result','profit','market_probability')
+    win,loss,void = ('Cover','No cover','Push') if market=='spread' else ('W','L','T')
+    assessable = [g for g in completed if market!='spread' or g['team_spread'] is not None]
+    priced = [g for g in assessable if g[odds_key] is not None]
+    settled = [g for g in priced if g[outcome_key] in {win,loss}]
+    paired = [g for g in settled if g[probability_key] is not None]
+    profit = sum(g[profit_key] for g in priced)
     stake = len(settled)*10
-    return dict(games=len(completed),pending=len(games)-len(completed),bets=len(settled),voids=sum(g['result']=='T' for g in priced),
-        wins=sum(g['result']=='W' for g in settled),losses=sum(g['result']=='L' for g in settled),profit=profit,stake=stake,
-        roi=profit/stake if stake else None,missing_odds=sum(g['moneyline'] is None for g in completed),
-        missing_pairs=sum(g['market_probability'] is None for g in completed),
-        expected_wins=sum(g['market_probability'] for g in paired),observed_wins=sum(g['result']=='W' for g in paired),paired_games=len(paired))
+    return dict(games=len(completed),pending=len(games)-len(completed),bets=len(settled),voids=sum(g[outcome_key]==void for g in priced),
+        wins=sum(g[outcome_key]==win for g in settled),losses=sum(g[outcome_key]==loss for g in settled),profit=profit,stake=stake,
+        roi=profit/stake if stake else None,missing_odds=sum(g[odds_key] is None for g in assessable),
+        missing_pairs=sum(g[probability_key] is None for g in assessable),missing_lines=len(completed)-len(assessable),
+        assessed_wins=sum(g[outcome_key]==win for g in assessable),assessed_losses=sum(g[outcome_key]==loss for g in assessable),assessed_voids=sum(g[outcome_key]==void for g in assessable),
+        expected_wins=sum(g[probability_key] for g in paired),observed_wins=sum(g[outcome_key]==win for g in paired),paired_games=len(paired))
 
 
-def split_filter(games, selection):
+def split_filter(games, selection, market='moneyline'):
     if selection=='all': return list(games)
     label={'favorites':'Favorite','underdogs':'Underdog'}[selection]
-    return [g for g in games if g['market_status']==label]
+    return [g for g in games if g['spread_status' if market=='spread' else 'market_status']==label]
 
 
 def price_bands(games, cuts):
