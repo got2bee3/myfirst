@@ -58,3 +58,27 @@ Enable Web-tab password protection on the separate site before exposing it. The 
 ## Validation performed in the cloud workspace
 
 Tests cover payout arithmetic, vig removal, ties, missing prices, relocation aliases, future-game exclusion, six-band boundaries, all 32 franchise pages, spread orientation, push handling, actual-price payouts, missing spread data, legacy-era argument handling, filtered CSV downloads, refresh CSRF protection, and preservation of old data on refresh failure. Database guard tests run independently. Live HTTP and source-refresh outcomes are reported in the task response. No PythonAnywhere deployment has been performed from this workspace.
+
+## One-click full-league research archive
+
+**Download all 32 teams · research ZIP** fetches a fresh nflverse schedule and generates `NFL_Research_YYYYMMDD.zip`. It ignores the single-team filters. The filename date uses America/New_York. The archive contains exactly `nfl_research.sqlite`, `team_summary.csv` (32 wide rows), `README.md`, and SQLite `schema.sql`.
+
+No MySQL connection is made. The archive has unique canonical games and two team perspectives per game, original input CSV bytes and row JSON, per-price provenance, independent market availability, source flags alongside derived division/conference indicators, separate future/unsettled views, and placed/refunded/settled stakes. Source discrepancies are recorded in SQLite and prominently reported in the archive README; they are never silently repaired. A source download failure does not silently fall back to an old snapshot. Duplicate IDs are quarantined rather than arbitrarily choosing a result. Unknown sportsbook, timing or price type stays unknown, not certified closing odds.
+
+Summary CSV columns are prefixed by market, then split, then statistic. Splits include all/favorites/underdogs/even/unknown/home/away/regular/playoffs. SQLite additionally includes season summaries and validation tables. Refunded stakes are excluded from the ROI denominator. The source CSV is unchanged by this operation. Export jobs are serialized using a nonblocking Linux file lock.
+
+Optional command line, from the project folder with its virtualenv active:
+
+```bash
+python research_export.py
+```
+
+That fetches fresh data and writes the archive under `exports/` (ignored by Git). For an explicitly offline run:
+
+```bash
+python research_export.py --input data/games.csv --output-dir exports
+```
+
+Offline runs label retrieval time unknown rather than inventing freshness. `--as-of YYYY-MM-DD` allows a reproducible cutoff. Exit code 2 means an archive was generated with reported validation failures; inspect it before analysis. A zero exit code means internal validation passed, not that sportsbook provenance or external schedule completeness has been independently established.
+
+Update the separate PythonAnywhere app using `git pull --ff-only` from `/home/KmayII/nfl_team_performance_gui`, then Reload it in the Web tab. No new Python dependencies or database migrations are needed. Download the archive through your own website and upload that ZIP into a new ChatGPT conversation.

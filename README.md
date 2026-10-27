@@ -6,6 +6,10 @@ The Flask GUI provides team selection and historical $10 flat-bet moneyline and 
 
 Independent MySQL storage for historical NFL moneyline analysis. This project does not import or change the NFL prediction model. Phase 1 here creates schema only: no teams, historical games, odds, or eras are seeded.
 
+## Full-league research export
+
+Use the webpage’s **Download all 32 teams · research ZIP** button, or run `python research_export.py`. One fresh-source run packages both markets, all franchises, independent availability, stakes/refunds, and validation reports into a self-contained dated ZIP. See [GUI_SETUP.md](GUI_SETUP.md).
+
 ## Legacy database tools
 
 The sections below document separate, unused database utilities. The GUI does not run migrations or use the legacy `team_eras` table. Removing eras from the GUI performs no database deletions.

@@ -162,5 +162,24 @@ def refresh():
     return redirect(url_for('index')+('?' + request.form.get('filters','') if request.form.get('filters') else ''))
 
 
+@app.post('/research.zip')
+def research_zip():
+    if not secrets.compare_digest(request.form.get('csrf',''),session.get('csrf','!')): abort(403)
+    from research_export import fresh_source, build_archive
+    DATA.mkdir(exist_ok=True,parents=True)
+    try:
+        with (DATA/'.research.lock').open('w') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            content,metadata=fresh_source()
+            archive,filename,report=build_archive(content,metadata)
+        return Response(archive,content_type='application/zip',headers={
+            'Content-Disposition':f'attachment; filename={filename}',
+            'X-Research-Validation':'passed' if report['validation_passed'] else 'discrepancies-reported'})
+    except Exception as exc:
+        app.logger.warning('Research export failed: %s',type(exc).__name__)
+        flash('The research ZIP could not be created, or another export is running. Please try again. No source data was changed.','error')
+        return redirect(url_for('index'))
+
+
 if __name__=='__main__':
     app.run(host='127.0.0.1',port=5000,debug=False)
